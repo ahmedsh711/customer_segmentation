@@ -1,35 +1,42 @@
 import streamlit as st
 import pandas as pd
-import os
+import sys
+from pathlib import Path
+import plotly.express as px
 
-from inference import get_prediction_manual, get_prediction_batch, SEGMENTS
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT_DIR / 'src'))
 
-st.set_page_config(page_title="Customer Segmentation", layout="wide", page_icon="📊")
+from inference import make_prediction, make_batch_prediction
+from utils import aggregate_customer_features
 
-st.title("Customer Segmentation Tool")
+st.set_page_config(page_title="Customer Segmentation", layout="wide")
 
-tab1, tab2 = st.tabs(["Single Prediction", "Batch Processing"])
+st.title("Customer Segmentation System")
+st.markdown("Predict customer segments using AI (K-Means Clustering).")
 
-# --- TAB 1: Single Manual Prediction ---
-with tab1:
-    st.header("Predict Single Customer Segment")
-    st.write("Enter the customer's behavioral metrics below:")
+# Sidebar
+st.sidebar.header("Navigation")
+option = st.sidebar.radio("Choose Mode:", ["Manual Prediction", "Batch Prediction (CSV)"])
+
+if option == "Manual Prediction":
+    st.header("Single Customer Prediction")
+    st.info("Enter the customer's aggregated metrics below.")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        recency = st.number_input("Recency (Days since last purchase)", min_value=0, value=10)
+        recency = st.number_input("Recency (Days since last visit)", min_value=0, value=10)
         frequency = st.number_input("Frequency (Total Transactions)", min_value=1, value=5)
-        tenure = st.number_input("Customer Tenure (Days)", min_value=0, value=365)
+        tenure = st.number_input("Tenure (Days since signup)", min_value=0, value=365)
         diversity = st.number_input("Category Diversity (Unique Categories)", min_value=1, value=2)
 
     with col2:
         monetary_total = st.number_input("Total Spend ($)", min_value=0.0, value=500.0)
-        monetary_max = st.number_input("Max Single Transaction ($)", min_value=0.0, value=100.0)
-        points = st.number_input("Loyalty Points", min_value=0, value=50)
+        monetary_max = st.number_input("Max Single Receipt ($)", min_value=0.0, value=100.0)
+        points = st.number_input("Total Loyalty Points", min_value=0, value=50)
 
     if st.button("Predict Segment"):
-        # Create dictionary matching the feature names in train.py
         input_data = {
             'Recency': recency,
             'Frequency': frequency,
@@ -40,49 +47,58 @@ with tab1:
             'Total_Points': points
         }
         
-        result = get_prediction_manual(input_data)
+        result = make_prediction(input_data)
         
         if "Error" in result:
             st.error(result)
         else:
-            st.success(f"This customer belongs to: **{result}**")
-
-# --- TAB 2: Batch Processing ---
-with tab2:
-    st.header("Batch Prediction")
-    st.write("Upload a raw transaction CSV (e.g., 'Cleaned_Data_Merchant_Level_2.csv'). The app will aggregate it and segment all customers.")
-
-    uploaded_file = st.file_uploader("Upload CSV File", type=['csv'])
-
-    if uploaded_file:
-        try:
-            raw_data = pd.read_csv(uploaded_file)
-            st.write("Preview of uploaded raw data:", raw_data.head(3))
+            st.success(f"**Customer Segment:** {result}")
             
-            if st.button("Run Batch Segmentation"):
-                with st.spinner("Aggregating data and predicting segments..."):
-                    results = get_prediction_batch(raw_data)
+            # Simple Description Logic
+            if "VIP" in result:
+                st.balloons()
+                st.markdown(" **Action:** Treat with exclusivity. Offer concierge service.")
+            elif "Inactive" in result:
+                st.markdown(" **Action:** Send win-back campaign immediately.")
+            elif "Potential" in result:
+                st.markdown(" **Action:** Offer loyalty rewards to push to VIP.")
+
+elif option == "Batch Prediction (CSV)":
+    st.header("Batch Processing")
+    st.write("Upload a raw transaction CSV (must have `User_Id`, `Trx_Vlu`, etc.) or pre-aggregated data.")
+    
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+    
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
+        st.write("Preview of uploaded data:", df.head())
+        
+        if st.button("Process & Predict"):
+            # Check if it looks like raw data or aggregated data
+            if 'Trx_Vlu' in df.columns and 'User_Id' in df.columns:
+                st.info("Detected Raw Transaction Data. Aggregating first...")
+                df_processed = aggregate_customer_features(df)
+            else:
+                st.info("Assuming Pre-aggregated Data...")
+                df_processed = df
+            
+            results = make_batch_prediction(df_processed)
+            
+            if isinstance(results, str): # Error message
+                st.error(results)
+            else:
+                st.success("Segmentation Complete!")
                 
-                if results is not None:
-                    st.success("Segmentation Complete!")
-                    
-                    # Show distribution
-                    st.subheader("Segment Distribution")
-                    st.bar_chart(results['Segment'].value_counts())
-                    
-                    st.write("### Customer Results")
-                    st.dataframe(results[['User_Id', 'Segment', 'Monetary_Total', 'Frequency']].head())
-                    
-                    # Download button
-                    csv_data = results.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="Download Segmented Data",
-                        data=csv_data,
-                        file_name="segmented_customers.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.error("Prediction failed. Please ensure you have trained the model first.")
-                    
-        except Exception as e:
-            st.error(f"Error processing file: {e}")
+                # Metrics
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total Customers", len(results))
+                col2.metric("VIP Customers", len(results[results['Segment'].str.contains('VIP')]))
+                col3.metric("Inactive Customers", len(results[results['Segment'].str.contains('Inactive')]))
+                
+                # Chart
+                fig = px.pie(results, names='Segment', title='Customer Distribution')
+                st.plotly_chart(fig)
+                
+                # Download
+                csv = results.to_csv(index=False).encode('utf-8')
+                st.download_button("Download Results CSV", csv, "segmented_customers.csv", "text/csv")

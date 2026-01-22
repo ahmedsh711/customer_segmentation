@@ -1,12 +1,14 @@
 import pandas as pd
 import joblib
-import os
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MODELS_DIR = os.path.join(BASE_DIR, 'models')
+# Setup Paths
+FILE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = FILE_DIR.parent
+MODELS_DIR = ROOT_DIR / 'models'
 
-# UPDATED: 5 Segment Names
-SEGMENT_LABELS = {
+# Segment Names mapped to sorted clusters (0 = Lowest, 4 = Highest)
+SEGMENT_NAMES = {
     0: 'Murky (Inactive)',
     1: 'Bronze (Low Value)',
     2: 'Silver (Average)',
@@ -14,24 +16,55 @@ SEGMENT_LABELS = {
     4: 'Diamond (VIP)'
 }
 
-def make_prediction(input_data):
+def load_artifacts():
     try:
-        # Load files
-        model = joblib.load(os.path.join(MODELS_DIR, 'best_model.pkl'))
-        scaler = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
-        feature_cols = joblib.load(os.path.join(MODELS_DIR, 'feature_columns.pkl'))
+        pipeline = joblib.load(MODELS_DIR / 'preprocessing_pipeline.pkl')
+        model = joblib.load(MODELS_DIR / 'best_model.pkl')
+        features = joblib.load(MODELS_DIR / 'feature_columns.pkl')
+        return model, pipeline, features
+    except FileNotFoundError:
+        return None, None, None
 
-        # Prepare data
-        df = pd.DataFrame([input_data])
-        df = df[feature_cols]
-
-        # Scale data
-        df_scaled = scaler.transform(df)
-
-        # Predict
-        cluster_id = model.predict(df_scaled)[0]
+def make_prediction(input_data):
+    model, pipeline, feature_cols = load_artifacts()
+    
+    if not model:
+        return "Error: Model files not found. Please train the model first."
         
-        return SEGMENT_LABELS.get(cluster_id, f"Cluster {cluster_id}")
+    # Convert dictionary to DataFrame
+    df = pd.DataFrame([input_data])
+    
+    # Ensure correct column order
+    df = df[feature_cols]
+    
+    # Preprocess
+    data_scaled = pipeline.transform(df)
+    
+    # Predict
+    cluster_id = model.predict(data_scaled)[0]
+    
+    return SEGMENT_NAMES.get(cluster_id, "Unknown")
 
-    except Exception as e:
-        return f"Error: {str(e)}"
+def make_batch_prediction(df_customers):
+    model, pipeline, feature_cols = load_artifacts()
+    
+    if not model:
+        return None
+    
+    # Ensure columns exist and order matches
+    try:
+        data_for_pred = df_customers[feature_cols].fillna(0)
+    except KeyError as e:
+        return f"Error: Missing columns in uploaded data. Expected: {feature_cols}"
+
+    # Preprocess
+    data_scaled = pipeline.transform(data_for_pred)
+    
+    # Predict
+    clusters = model.predict(data_scaled)
+    
+    # Add results to original dataframe
+    df_customers['Cluster_ID'] = clusters
+    df_customers['Segment'] = df_customers['Cluster_ID'].map(SEGMENT_NAMES)
+    
+    return df_customers

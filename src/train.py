@@ -1,67 +1,80 @@
 import pandas as pd
 import joblib
-import os
 import numpy as np
-from sklearn.preprocessing import StandardScaler
+import sys
+from pathlib import Path
 from sklearn.cluster import KMeans
 
-# Import your helper function
-from utils import aggregate_customer_features
+# Set up paths to work from anywhere
+FILE_DIR = Path(__file__).resolve().parent
+ROOT_DIR = FILE_DIR.parent
+DATA_PATH = ROOT_DIR / 'data' / 'raw' / 'Cleaned_Data_Merchant_Level_2.csv'
+MODELS_DIR = ROOT_DIR / 'models'
 
-# Define paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, 'Cleaned_Data_Merchant_Level_2.csv') 
-MODELS_DIR = os.path.join(BASE_DIR, 'models')
-os.makedirs(MODELS_DIR, exist_ok=True)
+# Add src to path so we can import internal modules
+sys.path.append(str(FILE_DIR))
+from utils import aggregate_customer_features
+from data_pipeline import get_preprocessing_pipeline
 
 def train_model():
-    print("1. Loading raw data...")
-    if not os.path.exists(DATA_PATH):
+    print("--- Starting Training Process ---")
+    
+    # 1. Load Data
+    if not DATA_PATH.exists():
         print(f"Error: Data file not found at {DATA_PATH}")
         return
-        
+
+    print("Loading raw data...")
     df_raw = pd.read_csv(DATA_PATH)
     
-    print("2. Aggregating data (Feature Engineering)...")
+    # 2. Feature Engineering
+    print("Aggregating customer features...")
     df_processed = aggregate_customer_features(df_raw)
     
-    # Select features for training
-    features = [
+    # Define features used for clustering
+    features_list = [
         'Recency', 'Frequency', 'Customer_Tenure', 'Category_Diversity', 
         'Monetary_Total', 'Monetary_Max', 'Total_Points'
     ]
     
-    # Ensure columns exist and fill NaNs
-    X = df_processed[features].fillna(0)
-
-    print("3. Scaling data...")
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    print("4. Training KMeans model...")
-    kmeans = KMeans(n_clusters=5, random_state=42)
+    X = df_processed[features_list].fillna(0)
+    
+    # 3. Preprocessing
+    print("Applying preprocessing pipeline...")
+    pipeline = get_preprocessing_pipeline()
+    X_scaled = pipeline.fit_transform(X)
+    
+    # 4. Train Model (KMeans)
+    print("Training KMeans model...")
+    # Using 5 clusters as defined in your project
+    kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
     kmeans.fit(X_scaled)
-
-    # Sort clusters: 0 = Lowest Value, 4 = Highest Value based on Total Spend (Monetary_Total)
-    monetary_idx = features.index('Monetary_Total')
     
-    # Sort cluster centers based on Monetary Value
-    idx = np.argsort(kmeans.cluster_centers_[:, monetary_idx])
+    # 5. Cluster Sorting 
+    monetary_idx = features_list.index('Monetary_Total')
     
-    # Create a lookup table to remap labels
-    lookup = np.zeros_like(idx)
-    lookup[idx] = np.arange(5)
+    # Get the cluster centers and sort them by Monetary Value
+    sorted_idx = np.argsort(kmeans.cluster_centers_[:, monetary_idx])
     
-    # Reorder labels
+    # Create a lookup map {old_label: new_label}
+    lookup = np.zeros_like(sorted_idx)
+    lookup[sorted_idx] = np.arange(5)
+    
+    # Reorder the labels and centers
     kmeans.labels_ = lookup[kmeans.labels_]
-    kmeans.cluster_centers_ = kmeans.cluster_centers_[idx]
-
-    print("5. Saving models...")
-    joblib.dump(kmeans, os.path.join(MODELS_DIR, 'best_model.pkl'))
-    joblib.dump(scaler, os.path.join(MODELS_DIR, 'scaler.pkl'))
-    joblib.dump(features, os.path.join(MODELS_DIR, 'feature_columns.pkl'))
+    kmeans.cluster_centers_ = kmeans.cluster_centers_[sorted_idx]
     
-    print("Training complete! Models saved in 'models/' folder.")
+    print("Clusters sorted by Monetary Value.")
+
+    # 6. Save Artifacts
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    
+    print("Saving models to", MODELS_DIR)
+    joblib.dump(pipeline, MODELS_DIR / 'preprocessing_pipeline.pkl')
+    joblib.dump(kmeans, MODELS_DIR / 'best_model.pkl')
+    joblib.dump(features_list, MODELS_DIR / 'feature_columns.pkl')
+    
+    print("--- Training Complete! ---")
 
 if __name__ == "__main__":
     train_model()
