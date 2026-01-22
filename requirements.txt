@@ -1,9 +1,6 @@
 streamlit
-pandas>=2.0.3
-numpy>=1.26.0
+pandas
+numpy
 scikit-learn
-plotly
 joblib
-pyarrow
-openpyxl
-matplotlib
+plotly

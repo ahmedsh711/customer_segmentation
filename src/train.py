@@ -1,59 +1,67 @@
 import pandas as pd
-import numpy as np
 import joblib
 import os
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import RobustScaler, FunctionTransformer
-from sklearn.mixture import GaussianMixture
-from .utils import aggregate_customer_features
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
-# Settings
-DATA_PATH = 'data/raw/Cleaned_Data_Merchant_Level_2.csv'
-MODEL_PATH = 'models/best_model.pkl'
-COLS_PATH = 'models/feature_columns.pkl'
-PARQUET_PATH = 'data/preprocessed/preprocessed_df.parquet'
+# Import your helper function
+from utils import aggregate_customer_features
 
-def train():
-    print("Loading Data..")
+# Define paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, 'Cleaned_Data_Merchant_Level_2.csv') 
+MODELS_DIR = os.path.join(BASE_DIR, 'models')
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+def train_model():
+    print("1. Loading raw data...")
     if not os.path.exists(DATA_PATH):
-        print(f"Error: {DATA_PATH} not found.")
+        print(f"Error: Data file not found at {DATA_PATH}")
         return
-
-    df = pd.read_csv(DATA_PATH)
+        
+    df_raw = pd.read_csv(DATA_PATH)
     
-    print("Processing Data...")
-    customer_features = aggregate_customer_features(df)
+    print("2. Aggregating data (Feature Engineering)...")
+    df_processed = aggregate_customer_features(df_raw)
     
-    # Columns to use for training
-    training_cols = [
-        'Recency', 'Frequency', 'Monetary_Total', 
-        'Monetary_Max', 'Category_Diversity', 
-        'Total_Points', 'Customer_Tenure'
+    # Select features for training
+    features = [
+        'Recency', 'Frequency', 'Customer_Tenure', 'Category_Diversity', 
+        'Monetary_Total', 'Monetary_Max', 'Total_Points'
     ]
     
-    X = customer_features[training_cols].fillna(0)
+    # Ensure columns exist and fill NaNs
+    X = df_processed[features].fillna(0)
+
+    print("3. Scaling data...")
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    print("4. Training KMeans model...")
+    kmeans = KMeans(n_clusters=5, random_state=42)
+    kmeans.fit(X_scaled)
+
+    # Sort clusters: 0 = Lowest Value, 4 = Highest Value based on Total Spend (Monetary_Total)
+    monetary_idx = features.index('Monetary_Total')
     
-    print("Training Model...")
-    # Pipeline: Log -> Scale -> Cluster
-    model = Pipeline(steps=[
-        ('Log', FunctionTransformer(np.log1p, validate=False)),
-        ('Scaler', RobustScaler()),
-        ('GMM', GaussianMixture(n_components=5, covariance_type='tied', random_state=42))
-    ])
+    # Sort cluster centers based on Monetary Value
+    idx = np.argsort(kmeans.cluster_centers_[:, monetary_idx])
     
-    labels = model.fit_predict(X)
+    # Create a lookup table to remap labels
+    lookup = np.zeros_like(idx)
+    lookup[idx] = np.arange(5)
     
-    print("Saving Files..")
-    os.makedirs('../models', exist_ok=True)
-    os.makedirs('../data/preprocessed', exist_ok=True)
+    # Reorder labels
+    kmeans.labels_ = lookup[kmeans.labels_]
+    kmeans.cluster_centers_ = kmeans.cluster_centers_[idx]
+
+    print("5. Saving models...")
+    joblib.dump(kmeans, os.path.join(MODELS_DIR, 'best_model.pkl'))
+    joblib.dump(scaler, os.path.join(MODELS_DIR, 'scaler.pkl'))
+    joblib.dump(features, os.path.join(MODELS_DIR, 'feature_columns.pkl'))
     
-    joblib.dump(model, MODEL_PATH)
-    joblib.dump(training_cols, COLS_PATH)
-    
-    # Save data for the dashboard
-    customer_features['Cluster'] = labels
-    customer_features.to_parquet(PARQUET_PATH, index=False)
-    print("Done!")
+    print("Training complete! Models saved in 'models/' folder.")
 
 if __name__ == "__main__":
-    train()
+    train_model()
